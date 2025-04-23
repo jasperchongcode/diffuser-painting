@@ -3,13 +3,15 @@ import cv2 as cv
 from PIL import Image
 
 class OpenCvCanvas:
-    COLOUR_KEY_MAPS = {"b":(0,0,0), "w":(255,255,255), "r":(0,0,255), "g":(0,255,0), "n":(19,69,139)}
+    COLOUR_KEY_MAPS = {"b":(0,0,0), "w":(255,255,255), "r":(0,0,255), "g":(0,255,0), "l": (255, 0, 0), "n":(19,69,139)}
     RADIUS_KEY_MAPS = {"1":1, "2":5, "3":10, "4":20, "5":40}
     MASK_VALUE = (255,255,255)
+
 
     def __init__(self, image_filename, size=(400,400), mask_padding=0):
         self.base = cv.resize(cv.imread(image_filename), size)
         self.painted_base = self.base.copy()
+        self.display_base = self.painted_base.copy()
         self.mask = np.zeros((*size, 3), np.uint8)
         self.size = size
         self.brush_radius = 20
@@ -17,13 +19,18 @@ class OpenCvCanvas:
         self.is_lmouse_down = False
         self.mask_padding = mask_padding
 
+        self.info_bar_height = 40
+        self.create_info_bar()
+
     def create_window(self, window_name="CV2Window", return_pil = True):
         self.window_name = window_name
         cv.namedWindow(window_name)
         cv.setMouseCallback(window_name, self.handle_mouse)
 
         while True:
-            cv.imshow(window_name, self.painted_base)
+            # self.display_base = self.painted_base.copy()
+            # self.draw_ghost_cursor() # for the brushg size outline
+            cv.imshow(window_name, np.concatenate( [self.info_bar, self.display_base], axis=0))
             k = cv.waitKey(1) & 0xFF # bitmask
             if k == 27:
                 break
@@ -37,6 +44,13 @@ class OpenCvCanvas:
 
 
     def handle_mouse(self, event, x, y, flags, param):
+            y -= self.info_bar_height
+            
+            if y<0:
+                # print("Attempting to draw on info bar")
+                return
+            
+            self.draw_ghost_cursor(x,y)
 
             if event == cv.EVENT_LBUTTONDOWN:
                 self.is_lmouse_down=True
@@ -62,6 +76,31 @@ class OpenCvCanvas:
         elif key in [ord(k) for k in OpenCvCanvas.RADIUS_KEY_MAPS.keys()]:
             self.brush_radius = OpenCvCanvas.RADIUS_KEY_MAPS[chr(key)]
 
+    def create_info_bar(self, background = (255,255,255)):
+        info_bar = np.full((self.info_bar_height, self.size[0], 3), background, dtype=np.uint8)
+        print(info_bar.shape, info_bar.dtype)
+        outline_colour = (0,0,0)
+        letter_spacing = 30
+        initial_spacing = 5
+        for i, key in enumerate(OpenCvCanvas.COLOUR_KEY_MAPS):
+            cv.putText(info_bar, str(key), (i*letter_spacing + initial_spacing, int(self.info_bar_height/1.5)), cv.FONT_HERSHEY_SIMPLEX, 1, outline_colour, 3, cv.LINE_AA)
+            cv.putText(info_bar, str(key), (i*letter_spacing + initial_spacing, int(self.info_bar_height/1.5)), cv.FONT_HERSHEY_SIMPLEX, 1, OpenCvCanvas.COLOUR_KEY_MAPS[key], 2, cv.LINE_AA)
+            ending_spacing = i*letter_spacing+initial_spacing
+
+        ending_spacing += letter_spacing
+        cv.line(info_bar, (ending_spacing, 0), (ending_spacing, self.info_bar_height), outline_colour, 2)
+        ending_spacing += letter_spacing
+        for i, key in enumerate(OpenCvCanvas.RADIUS_KEY_MAPS):
+            cv.putText(info_bar, str(key), (i*letter_spacing + ending_spacing, int(self.info_bar_height/1.5)), cv.FONT_HERSHEY_SIMPLEX, 1, outline_colour, int(OpenCvCanvas.RADIUS_KEY_MAPS[key]/4), cv.LINE_AA)
+            # cv.circle(info_bar, (i*letter_spacing + ending_spacing, int(height/1.5)), int(OpenCvCanvas.RADIUS_KEY_MAPS[key]), outline_colour, -1)
+
+        self.info_bar = info_bar
+
+    
+    def draw_ghost_cursor(self, x, y):
+        self.display_base = self.painted_base.copy()
+        cv.circle(self.display_base, (x,y), self.brush_radius, self.brush_value, 1)
+
     def get_base(self):
         return self.base
     
@@ -81,8 +120,10 @@ class OpenCvCanvas:
         return Image.fromarray(self.mask[..., ::-1]).convert("L")
 
 
+
 import torch
 from diffusers import AutoPipelineForInpainting
+import numpy as np
 
 def generate_image(mask_pil, img_pil, size = (400,400), prompt="head of dragon", params = {}):
 
@@ -99,6 +140,51 @@ def generate_image(mask_pil, img_pil, size = (400,400), prompt="head of dragon",
     image = pipeline(prompt=prompt, 
                      image=img_pil, 
                      mask_image=mask_pil, 
+                     width=size[0], 
+                     height=size[1], 
+                    # #  blur_factor=20,
+                    **params
+                     ).images[0]
+    # make_image_grid([imgi, mask_pil, image], rows=1, cols=3)
+    return image 
+
+from diffusers import ControlNetModel, StableDiffusionControlNetInpaintPipeline
+
+def generate_image_controlnet(mask_pil, img_pil, size = (400,400), prompt="head of dragon", params = {}):
+    print("Begin generating image")
+    controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_inpaint", torch_dtype=torch.float16, variant="fp16")
+
+
+    pipeline = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+        "runwayml/stable-diffusion-inpainting", 
+        controlnet=controlnet,
+        torch_dtype=torch.float16, 
+        variant="fp16",
+        safety_checker=None
+        
+    ).to("cuda")
+
+    print("Loaded pipeline")
+    # pipeline.safety_checker = lambda images, clip_input: (images, [False] * len(images))
+    # pipeline.enable_xformers_memory_efficient_attention()
+
+    def make_inpaint_condition(init_image, mask_image):
+        init_image = np.array(init_image.convert("RGB")).astype(np.float32) / 255.0
+        mask_image = np.array(mask_image.convert("L")).astype(np.float32) / 255.0
+
+        assert init_image.shape[0:1] == mask_image.shape[0:1], "image and image_mask must have the same image size"
+        init_image[mask_image > 0.5] = -1.0  # set as masked pixel
+        init_image = np.expand_dims(init_image, 0).transpose(0, 3, 1, 2)
+        init_image = torch.from_numpy(init_image)
+        return init_image
+
+    control_image = make_inpaint_condition(img_pil, mask_pil)  
+    print("Created control image")
+
+    image = pipeline(prompt=prompt, 
+                     image=img_pil, 
+                     mask_image=mask_pil, 
+                     control_image=control_image,
                      width=size[0], 
                      height=size[1], 
                     # #  blur_factor=20,
