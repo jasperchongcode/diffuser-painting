@@ -3,8 +3,9 @@ import cv2 as cv
 from PIL import Image
 
 class OpenCvCanvas:
-    COLOUR_KEY_MAPS = {"b":(0,0,0), "w":(255,255,255), "r":(0,0,255), "g":(0,255,0), "l": (255, 0, 0), "n":(19,69,139)}
+    COLOUR_KEY_MAPS = {"b":(0,0,0), "w":(255,255,255), "r":(0,0,255), "g":(0,255,0), "l": (255, 0, 0), "n":(19,69,139), "o":(0,165,255)}
     RADIUS_KEY_MAPS = {"1":1, "2":5, "3":10, "4":20, "5":40}
+    ALPHA_KEY_MAPS = {"6":1, "7":0.8, "8":0.6, "9":0.4, "0":0.2}
     MASK_VALUE = (255,255,255)
 
 
@@ -13,13 +14,15 @@ class OpenCvCanvas:
         self.painted_base = self.base.copy()
         self.display_base = self.painted_base.copy()
         self.mask = np.zeros((*size, 3), np.uint8)
+        self.stroke_buffer = np.ones((*size, 3), dtype=np.float32)*-1 # this is so you can correctly do strokes without stacking transparency
         self.size = size
         self.brush_radius = 20
         self.brush_value = (255,255,255)
+        self.alpha = 1
         self.is_lmouse_down = False
         self.mask_padding = mask_padding
 
-        self.info_bar_height = 40
+        self.info_bar_height = 40  
         self.create_info_bar()
 
     def create_window(self, window_name="CV2Window", return_pil = True):
@@ -28,8 +31,7 @@ class OpenCvCanvas:
         cv.setMouseCallback(window_name, self.handle_mouse)
 
         while True:
-            # self.display_base = self.painted_base.copy()
-            # self.draw_ghost_cursor() # for the brushg size outline
+            # draw buffer temporarily
             cv.imshow(window_name, np.concatenate( [self.info_bar, self.display_base], axis=0))
             k = cv.waitKey(1) & 0xFF # bitmask
             if k == 27:
@@ -58,14 +60,32 @@ class OpenCvCanvas:
                 
             elif event == cv.EVENT_LBUTTONUP:
                 self.is_lmouse_down = False
+                if (np.any(self.stroke_buffer != -1)):
+                    self.clear_buffer()
 
             elif event == cv.EVENT_MOUSEMOVE and self.is_lmouse_down:
                 self.draw(x,y)
+            
 
+    def clear_buffer(self):
+            # convert types so it doesnt freak out with -1
+            stroke_float = self.stroke_buffer.astype(np.float32)
+            painted_float = self.painted_base.astype(np.float32)
+            # combine them 
+            blended = cv.addWeighted(stroke_float, self.alpha, painted_float, 1 - self.alpha, 0)
+            # Conditionally add the blended ones when its not -1
+            self.painted_base = np.where(self.stroke_buffer[:,:,:] == -1, self.painted_base, blended.astype(np.uint8))
+            # clear buffer
+            self.stroke_buffer = np.ones((*size, 3), dtype=np.float32)*-1
+            # print("CLEARED STROKE BUFFER:", (np.any(self.stroke_buffer != -1)))
 
     def draw(self, x, y, value=(255,255,255)):
-        # draw onto painted base 
-        cv.circle(self.painted_base, (x,y), self.brush_radius, self.brush_value, -1)
+        if self.alpha < 1:
+            # save to buffer so dont stack transparency
+            cv.circle(self.stroke_buffer, (x,y), self.brush_radius, self.brush_value, -1)
+        else:
+            # draw onto painted base 
+            cv.circle(self.painted_base, (x,y), self.brush_radius, self.brush_value, -1)
         # draw onto the mask the same amount in white
         cv.circle(self.mask, (x,y), self.brush_radius+self.mask_padding, OpenCvCanvas.MASK_VALUE, -1)
 
@@ -75,6 +95,9 @@ class OpenCvCanvas:
 
         elif key in [ord(k) for k in OpenCvCanvas.RADIUS_KEY_MAPS.keys()]:
             self.brush_radius = OpenCvCanvas.RADIUS_KEY_MAPS[chr(key)]
+        
+        elif key in [ord(k) for k in OpenCvCanvas.ALPHA_KEY_MAPS.keys()]:
+            self.alpha = OpenCvCanvas.ALPHA_KEY_MAPS[chr(key)]
 
     def create_info_bar(self, background = (255,255,255)):
         info_bar = np.full((self.info_bar_height, self.size[0], 3), background, dtype=np.uint8)
@@ -98,8 +121,23 @@ class OpenCvCanvas:
 
     
     def draw_ghost_cursor(self, x, y):
+        # print("drawing ghost ")
         self.display_base = self.painted_base.copy()
-        cv.circle(self.display_base, (x,y), self.brush_radius, self.brush_value, 1)
+        if (np.any(self.stroke_buffer != -1)): # display the temporary buffer if it exists
+                # print("DRAWING IN TEMP BUFFER")
+                stroke_float = self.stroke_buffer.astype(np.float32)
+                display_float = self.display_base.astype(np.float32)
+                blended = cv.addWeighted(stroke_float, self.alpha, display_float, 1 - self.alpha, 0)
+                self.display_base = np.where(self.stroke_buffer[:,:,:] == -1, self.display_base, blended.astype(np.uint8))
+                
+        if self.alpha < 1:
+            # draw circle with transparency
+            overlay = self.display_base.copy()
+            cv.circle(overlay, (x,y), self.brush_radius, self.brush_value, 1)
+            self.display_base= cv.addWeighted(overlay, self.alpha, self.display_base, 1-self.alpha, 0)
+            del overlay
+        else:
+            cv.circle(self.display_base, (x,y), self.brush_radius, self.brush_value, 1)
 
     def get_base(self):
         return self.base
@@ -118,7 +156,7 @@ class OpenCvCanvas:
     
     def get_mask_pil(self):
         return Image.fromarray(self.mask[..., ::-1]).convert("L")
-
+    
 
 
 import torch
