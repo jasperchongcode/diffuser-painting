@@ -1,0 +1,6 @@
+diffusers==0.33.1
+numpy==2.2.5
+Pillow==11.2.1
+torch==2.6.0+cu118
+opencv-python==4.10.0
+diffusers==0.33.1
