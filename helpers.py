@@ -326,12 +326,12 @@ def generate_image_controlnet(mask_pil, img_pil, size=(400, 400), prompt="head o
     return image
 
 
-def make_image_row(images: list[Image.Image], labels: list[str] = [], font: ImageFont.FreeTypeFont = ImageFont.truetype("times.ttf", size=24)) -> Image.Image:
+def make_image_row(images: list[Image.Image], labels: list[str] = [], font: ImageFont.FreeTypeFont = ImageFont.truetype("times.ttf", size=24), size = (400,400) ) -> Image.Image:
 
     if labels and len(images) != len(labels):
         print("ERRROR")
 
-    size = (400,400) 
+    
     images = [img.resize(size) for img in images]
 
     output = Image.new("RGB", (size[0]*len(images), size[1]))
